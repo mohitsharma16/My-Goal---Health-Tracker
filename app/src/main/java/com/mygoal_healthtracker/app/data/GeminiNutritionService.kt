@@ -70,7 +70,7 @@ class GeminiNutritionService(
         return get(key)?.jsonPrimitive?.floatOrNull ?: 0f
     }
 
-    private fun offlineEstimate(name: String, quantity: String): Nutrition {
+    fun offlineEstimate(name: String, quantity: String): Nutrition {
         val seed = (name.lowercase() + quantity.lowercase()).hashCode().absoluteValue
         val servingFactor = when {
             quantity.contains("1000") -> 4f

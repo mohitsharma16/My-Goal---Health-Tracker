@@ -62,14 +62,29 @@ class HealthRepository(
                 reminderEnabled = reminderEnabled,
             ),
         )
-        if (mealId != 0L) {
-            dao.deleteMealOptions(savedMealId)
-            dao.deleteLogsForMeal(savedMealId)
+
+        val nutritionCache = dao.getFoodItems().associateBy { foodKey(it.name, it.quantity) }
+        val existingOptions = if (mealId != 0L) {
+            dao.getOptionsForMeal(savedMealId).associateBy { it.name.lowercase().trim() }
+        } else {
+            emptyMap()
         }
+        val keptOptionIds = mutableSetOf<Long>()
+
         options.filter { it.name.isNotBlank() }.forEach { option ->
-            val optionId = dao.upsertMealOption(MealOptionEntity(mealId = savedMealId, name = option.name.trim()))
+            val match = existingOptions[option.name.lowercase().trim()]
+            val optionId = if (match != null) {
+                dao.deleteFoodItemsForOption(match.id)
+                match.id
+            } else {
+                dao.upsertMealOption(MealOptionEntity(mealId = savedMealId, name = option.name.trim()))
+            }
+            keptOptionIds.add(optionId)
             option.foodItems.filter { it.name.isNotBlank() && it.quantity.isNotBlank() }.forEach { food ->
-                val nutrition = nutritionService.estimateFood(food.name, food.quantity)
+                val cached = nutritionCache[foodKey(food.name, food.quantity)]
+                val nutrition = cached?.let {
+                    Nutrition(it.calories, it.protein, it.carbs, it.fat)
+                } ?: nutritionService.estimateFood(food.name, food.quantity)
                 dao.upsertFoodItem(
                     FoodItemEntity(
                         mealOptionId = optionId,
@@ -83,8 +98,16 @@ class HealthRepository(
                 )
             }
         }
+
+        existingOptions.values
+            .filter { it.id !in keptOptionIds }
+            .forEach { dao.deleteMealOption(it.id) }
+
         MealReminderScheduler.schedule(context, savedMealId, mealName, time, reminderEnabled)
     }
+
+    private fun foodKey(name: String, quantity: String): String =
+        "${name.lowercase().trim()}|${quantity.lowercase().trim()}"
 
     suspend fun deleteMeal(meal: MealEntity) {
         MealReminderScheduler.cancel(context, meal.id)
@@ -153,33 +176,52 @@ class HealthRepository(
     private suspend fun seedStarterPlanIfNeeded() {
         if (dao.getMeals().isNotEmpty()) return
         dao.upsertWaterGoal(DailyWaterGoalEntity(goalMl = 2500))
-        saveMeal(
-            mealName = "Breakfast",
-            time = "08:30",
-            reminderEnabled = true,
-            options = listOf(
+        seedMeal(
+            "Breakfast",
+            "08:30",
+            listOf(
                 DraftMealOption("Paneer Sandwich", listOf(DraftFoodItem("Paneer sandwich", "2 pieces"))),
                 DraftMealOption("Poha Bowl", listOf(DraftFoodItem("Poha", "1 bowl"))),
             ),
         )
-        saveMeal(
-            mealName = "Lunch",
-            time = "13:00",
-            reminderEnabled = true,
-            options = listOf(
+        seedMeal(
+            "Lunch",
+            "13:00",
+            listOf(
                 DraftMealOption("Dal Rice", listOf(DraftFoodItem("Dal", "1 bowl"), DraftFoodItem("Rice", "1 bowl"))),
                 DraftMealOption("Roti Sabzi", listOf(DraftFoodItem("Roti", "2 pieces"), DraftFoodItem("Mixed vegetables", "1 bowl"))),
             ),
         )
-        saveMeal(
-            mealName = "Dinner",
-            time = "20:00",
-            reminderEnabled = true,
-            options = listOf(
+        seedMeal(
+            "Dinner",
+            "20:00",
+            listOf(
                 DraftMealOption("Moong Dal Dosa", listOf(DraftFoodItem("Moong dal dosa", "2 pieces"), DraftFoodItem("Vegetables", "1 bowl"))),
                 DraftMealOption("Khichdi", listOf(DraftFoodItem("Vegetable khichdi", "1 bowl"))),
             ),
         )
+    }
+
+    private suspend fun seedMeal(name: String, time: String, options: List<DraftMealOption>) {
+        val mealId = dao.upsertMeal(MealEntity(name = name, time = time, reminderEnabled = true))
+        options.forEach { option ->
+            val optionId = dao.upsertMealOption(MealOptionEntity(mealId = mealId, name = option.name))
+            option.foodItems.forEach { food ->
+                val nutrition = nutritionService.offlineEstimate(food.name, food.quantity)
+                dao.upsertFoodItem(
+                    FoodItemEntity(
+                        mealOptionId = optionId,
+                        name = food.name,
+                        quantity = food.quantity,
+                        calories = nutrition.calories,
+                        protein = nutrition.protein,
+                        carbs = nutrition.carbs,
+                        fat = nutrition.fat,
+                    ),
+                )
+            }
+        }
+        MealReminderScheduler.schedule(context, mealId, name, time, true)
     }
 
     private fun validateBackup(backup: AppBackup) {

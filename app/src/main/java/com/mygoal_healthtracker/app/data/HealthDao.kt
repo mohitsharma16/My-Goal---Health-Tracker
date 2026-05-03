@@ -50,6 +50,15 @@ interface HealthDao {
     @Query("DELETE FROM meal_options WHERE mealId = :mealId")
     suspend fun deleteMealOptions(mealId: Long)
 
+    @Query("SELECT * FROM meal_options WHERE mealId = :mealId")
+    suspend fun getOptionsForMeal(mealId: Long): List<MealOptionEntity>
+
+    @Query("DELETE FROM meal_options WHERE id = :optionId")
+    suspend fun deleteMealOption(optionId: Long)
+
+    @Query("DELETE FROM food_items WHERE mealOptionId = :optionId")
+    suspend fun deleteFoodItemsForOption(optionId: Long)
+
     @Query("DELETE FROM meal_logs WHERE mealId = :mealId")
     suspend fun deleteLogsForMeal(mealId: Long)
 
